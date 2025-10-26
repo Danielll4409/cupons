@@ -1,8 +1,40 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { getCurrentUser } from "@/lib/auth"
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await context.params
+
+    if (!id) {
+      return NextResponse.json({ error: "ID do feedback ausente" }, { status: 400 })
+    }
+
+    const [feedback] = await query(
+      `SELECT id, nome, email, telefone, assunto, mensagem, status, criado_em
+       FROM feedback
+       WHERE id = ?`,
+      [id]
+    )
+
+    if (!feedback) {
+      return NextResponse.json({ error: "Feedback não encontrado" }, { status: 404 })
+    }
+
+    return NextResponse.json({ feedback }, { status: 200 })
+  } catch (error) {
+    console.error("Erro ao buscar feedback:", error)
+    return NextResponse.json({ error: "Erro ao buscar feedback" }, { status: 500 })
+  }
+}
+
+export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await getCurrentUser()
+    if (!user || user.papel !== "admin") {
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
+    }
+
     const { id } = await context.params
     const body = await request.json()
     const { status } = body
@@ -12,13 +44,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json({ error: "Status inválido" }, { status: 400 })
     }
 
-    const result = await query<any>(`UPDATE feedback SET status = ? WHERE id = ?`, [status, id])
+    const result = await query<any>(
+      `UPDATE feedback SET status = ?, atualizado_em = NOW() WHERE id = ?`,
+      [status, id]
+    )
 
     if (result.affectedRows === 0) {
       return NextResponse.json({ error: "Feedback não encontrado" }, { status: 404 })
     }
 
-    // Buscar o feedback atualizado
+    if (status === "resolvido" && global.io) {
+      global.io.to(`feedback_${id}`).emit("feedback_resolvido", { feedbackId: Number.parseInt(id) })
+      console.log(`Feedback ${id} marcado como resolvido`)
+    }
+
     const [feedback] = await query<Array<any>>(
       `SELECT id, nome, email, telefone, assunto, mensagem, criado_em as timestamp, status
        FROM feedback WHERE id = ?`,
@@ -32,8 +71,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 }
 
-export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const user = await getCurrentUser()
+    if (!user || user.papel !== "admin") {
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
+    }
+
     const { id } = await context.params
 
     const result = await query<any>(`DELETE FROM feedback WHERE id = ?`, [id])
